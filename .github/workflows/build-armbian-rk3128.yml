@@ -17,7 +17,7 @@ on:
     - cron: '0 2 * * *'
 
 env:
-  BUILD_ARMBIAN_TAG: v24.5.1
+  BUILD_ARMBIAN_TAG: v23.02.2
   TARGET_BOARD: rock64
   CUSTOM_CONFIG: rk3128-custom.conf
   BRANCH: legacy
