@@ -1,11 +1,9 @@
 name: Build Armbian for RK3128 Printer Server
 
 on:
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
   push:
     branches: [ main ]
-  schedule:
-    - cron: '0 2 * * 1'  # 每周一凌晨2点自动构建
 
 env:
   TARGET_BOARD: rock64
@@ -14,7 +12,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180  # 编译可能耗时较长
+    timeout-minutes: 180
 
     steps:
     - name: Checkout repository
@@ -36,25 +34,31 @@ jobs:
           swig systemd-container u-boot-tools udev unzip uuid-dev whiptail \
           wget xz-utils zip zlib1g-dev zstd
 
-    - name: Clone Armbian build framework (使用 legacy 分支)
-      run: git clone --depth=1 --branch=legacy https://github.com/armbian/build.git armbian-build
+    - name: Clone Armbian build framework (主分支最新版)
+      run: git clone --depth=1 https://github.com/armbian/build.git armbian-build
 
     - name: Copy custom configuration
       run: cp $CUSTOM_CONFIG armbian-build/config/boards/rock64.conf.override
 
-    - name: Create userpatches directory
+    - name: Prepare kernel config for RK3128
       run: |
         cd armbian-build
-        mkdir -p userpatches/kernel/rockchip-legacy
-
-    - name: Create RK3128 kernel config patch
-      run: |
-        cd armbian-build
-        cat > userpatches/kernel/rockchip-legacy.config << 'EOF'
+        mkdir -p userpatches
+        
+        # 创建内核配置补丁
+        cat > userpatches/kernel-rockchip-legacy.config << 'EOF'
         # RK3128 专用内核配置
         CONFIG_ROCKCHIP_RK3128=y
         CONFIG_MACH_RK3128=y
-        # USB 与打印机支持
+        CONFIG_CPU_RK312X=y
+        CONFIG_SERIAL_8250=y
+        CONFIG_SERIAL_8250_CONSOLE=y
+        CONFIG_SERIAL_OF_PLATFORM=y
+        CONFIG_MMC_DW=y
+        CONFIG_MMC_DW_ROCKCHIP=y
+        CONFIG_MMC_DW_IDMAC=y
+        CONFIG_RTC_DRV_RK808=y
+        # USB 支持
         CONFIG_USB=y
         CONFIG_USB_SUPPORT=y
         CONFIG_USB_XHCI_HCD=y
@@ -68,13 +72,13 @@ jobs:
         CONFIG_USB_UAS=y
         CONFIG_USB_SERIAL=y
         CONFIG_USB_SERIAL_SIMPLE=y
+        CONFIG_USB_ACM=y
         # 网络支持
         CONFIG_NETDEVICES=y
         CONFIG_ETHERNET=y
         CONFIG_NET_VENDOR_REALTEK=y
         CONFIG_R8169=y
         CONFIG_RTL_CARDS=y
-        # 无线网络 (常见板载芯片)
         CONFIG_WLAN=y
         CONFIG_RFKILL=y
         CONFIG_CFG80211=y
@@ -82,141 +86,79 @@ jobs:
         CONFIG_RTLWIFI=y
         CONFIG_RTL8192CU=y
         CONFIG_RTL8XXXU=y
-        # 存储
-        CONFIG_MMC_DW=y
-        CONFIG_MMC_DW_ROCKCHIP=y
-        CONFIG_MMC_DW_IDMAC=y
-        # 基础外设
-        CONFIG_SERIAL_8250=y
-        CONFIG_SERIAL_8250_CONSOLE=y
-        CONFIG_SERIAL_OF_PLATFORM=y
-        CONFIG_RTC_DRV_RK808=y
-        # 关闭不需要的图形功能以减小体积
-        # CONFIG_DRM=y
-        # CONFIG_DRM_ROCKCHIP=y
-        # CONFIG_SOUND=y
+        # 关闭不需要的功能
+        # CONFIG_SOUND=n
+        # CONFIG_DRM=n
         EOF
 
-    - name: Create printer server setup script
+    - name: Create printer setup script
       run: |
         cd armbian-build
         mkdir -p userpatches/customize-image.d
-        cat > userpatches/customize-image.d/99-setup-printer-server.sh << 'EOF'
-        #!/bin/bash
-        echo "=========================================="
-        echo "  配置 RK3128 打印机服务器"
-        echo "=========================================="
         
-        # 更新并安装打印服务
+        cat > userpatches/customize-image.d/99-rk3128-printer.sh << 'EOF'
+        #!/bin/bash
+        echo "正在配置 RK3128 打印机服务器..."
+        
+        # 安装打印服务
         apt-get update
-        apt-get install -y --no-install-recommends \
+        apt-get install -y \
           cups cups-client cups-filters cups-bsd \
           cups-pdf printer-driver-all hplip \
-          sane sane-utils avahi-daemon avahi-discover
+          sane sane-utils avahi-daemon
         
-        # 允许远程管理并共享打印机
+        # 配置 CUPS
         cupsctl --remote-any --remote-admin --share-printers
         usermod -a -G lpadmin root
         
-        # 创建简易管理脚本
-        cat > /usr/local/bin/printer-admin << 'SCRIPT_EOF'
+        # 创建管理脚本
+        cat > /usr/local/bin/printer-manage << 'SCRIPT_EOF'
         #!/bin/bash
-        case "$1" in
-          list)
+        echo "RK3128 打印机管理"
+        echo "1. 查看打印机状态"
+        echo "2. 添加 USB 打印机"
+        echo "3. 添加网络打印机"
+        echo "4. 重启打印服务"
+        echo "5. 打印测试页"
+        read -p "选择操作: " choice
+        
+        case $choice in
+          1)
             lpstat -p -d
             ;;
-          add-usb)
-            echo "可用USB设备:"
+          2)
+            echo "可用的 USB 打印机:"
             lpinfo -v | grep usb
-            if [ $# -eq 3 ]; then
-              lpadmin -p "$2" -E -v "$3" -m everywhere
-              echo "已添加打印机: $2"
-            else
-              echo "用法: printer-admin add-usb <名称> <设备URI>"
-              echo "示例: printer-admin add-usb HP_Printer usb://HP/LaserJet"
-            fi
+            read -p "输入打印机名称: " name
+            read -p "输入设备 URI: " uri
+            lpadmin -p "$name" -E -v "$uri" -m everywhere
             ;;
-          add-network)
-            if [ $# -eq 3 ]; then
-              lpadmin -p "$2" -E -v "socket://$3" -m everywhere
-              echo "已添加网络打印机: $2"
-            else
-              echo "用法: printer-admin add-network <名称> <IP地址>"
-            fi
+          3)
+            read -p "输入打印机名称: " name
+            read -p "输入 IP 地址: " ip
+            lpadmin -p "$name" -E -v "socket://$ip" -m everywhere
             ;;
-          test)
-            echo "CUPS打印机服务器测试页" | lp
-            echo "测试页已发送"
-            ;;
-          restart)
+          4)
             systemctl restart cups
             systemctl restart avahi-daemon
             echo "服务已重启"
             ;;
-          *)
-            echo "RK3128 打印机管理命令"
-            echo "用法:"
-            echo "  list                 - 列出打印机"
-            echo "  add-usb <名> <URI>   - 添加USB打印机"
-            echo "  add-network <名> <IP> - 添加网络打印机"
-            echo "  test                 - 打印测试页"
-            echo "  restart              - 重启打印服务"
+          5)
+            echo "测试打印页" | lp
+            echo "测试页已发送"
             ;;
         esac
         SCRIPT_EOF
         
-        chmod +x /usr/local/bin/printer-admin
+        chmod +x /usr/local/bin/printer-manage
         
-        # 创建网络配置助手
-        cat > /usr/local/bin/setup-network << 'NET_EOF'
-        #!/bin/bash
-        echo "网络配置助手"
-        echo "当前IP地址:"
-        hostname -I
-        echo ""
-        echo "有线网络:"
-        nmcli connection show --active | grep ethernet || echo "未连接"
-        echo ""
-        echo "要配置网络，请使用:"
-        echo "  nmtui          # 文本界面配置工具"
-        echo "  nmcli          # 命令行配置工具"
-        NET_EOF
-        
-        chmod +x /usr/local/bin/setup-network
-        
-        # 创建欢迎信息
-        cat > /etc/issue << 'WELCOME_EOF'
-        
-        ==========================================
-            RK3128 打印机服务器
-        ==========================================
-        系统: Armbian $(lsb_release -d -s)
-        内核: $(uname -r)
-        IP地址: $(hostname -I | cut -d' ' -f1)
-        
-        管理界面: http://$(hostname -I | cut -d' ' -f1):631
-        SSH登录: ssh root@$(hostname -I | cut -d' ' -f1)
-        
-        常用命令:
-          printer-admin     - 打印机管理
-          setup-network     - 网络信息
-          cupsctl           - CUPS配置
-        
-        ==========================================
-        
-        WELCOME_EOF
-        
-        cp /etc/issue /etc/issue.net
-        
-        echo "=========================================="
-        echo "  打印机服务器配置完成!"
-        echo "  请访问 http://<设备IP>:631 进行管理"
-        echo "=========================================="
+        echo "打印机服务器配置完成!"
+        echo "Web 管理界面: http://$(hostname -I | cut -d' ' -f1):631"
         EOF
         
-        chmod +x userpatches/customize-image.d/99-setup-printer-server.sh
+        chmod +x userpatches/customize-image.d/99-rk3128-printer.sh
 
-    - name: Build Armbian image
+    - name: Build Armbian for RK3128
       run: |
         cd armbian-build
         ./compile.sh \
@@ -227,30 +169,35 @@ jobs:
           BUILD_DESKTOP=no \
           KERNEL_ONLY=no \
           KERNEL_CONFIGURE=no \
-          BSPFREEZE=yes \
-          EXPERT="yes"
+          EXPERT=yes \
+          CLEAN_LEVEL="make,debs"
 
-    - name: Rename output files
+    - name: Rename output to RK3128
       run: |
         cd armbian-build/output/images
-        for file in Armbian*.img Armbian*.sha; do
-          if [ -f "$file" ]; then
-            newname=$(echo "$file" | sed 's/Armbian_rock64_/Armbian_rk3128_printer_/')
-            mv "$file" "$newname" || true
+        for img in Armbian*.img; do
+          if [ -f "$img" ]; then
+            newname=$(echo "$img" | sed 's/rock64/rk3128-printer/')
+            mv "$img" "$newname"
           fi
         done
-        ls -la *.img *.sha
+        for sha in Armbian*.sha; do
+          if [ -f "$sha" ]; then
+            newname=$(echo "$sha" | sed 's/rock64/rk3128-printer/')
+            mv "$sha" "$newname"
+          fi
+        done
 
-    - name: Upload firmware image
+    - name: Upload firmware
       uses: actions/upload-artifact@v4
       with:
-        name: rk3128-printer-server-image
-        path: armbian-build/output/images/Armbian_rk3128_printer_*.img
+        name: rk3128-printer-firmware
+        path: armbian-build/output/images/Armbian_rk3128-printer_*.img
         retention-days: 30
 
-    - name: Upload checksum file
+    - name: Upload checksum
       uses: actions/upload-artifact@v4
       with:
         name: rk3128-checksums
-        path: armbian-build/output/images/Armbian_rk3128_printer_*.sha
+        path: armbian-build/output/images/Armbian_rk3128-printer_*.sha
         retention-days: 30
