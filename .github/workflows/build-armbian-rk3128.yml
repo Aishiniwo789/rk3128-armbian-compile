@@ -17,7 +17,7 @@ on:
     - cron: '0 2 * * *'
 
 env:
-  BUILD_ARMBIAN_VERSION: 24.5.1
+  BUILD_ARMBIAN_TAG: v24.5.1
   TARGET_BOARD: rock64
   CUSTOM_CONFIG: rk3128-custom.conf
   BRANCH: legacy
@@ -35,7 +35,7 @@ jobs:
       run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git bash bc binfmt-support bison bsdmainutils build-essential ca-certificates cmake cpio curl debootstrap device-tree-compiler dialog dosfstools f2fs-tools flex gawk gcc-arm-linux-gnueabihf gcc-arm-none-eabi gcc-x86-64-linux-gnu gdisk graphviz haveged imagemagick jq kmod libbison-dev libelf-dev libfdt-dev libfl-dev liblz4-tool libncurses-dev libpython3-dev libssl-dev libusb-1.0-0-dev linux-base locales lsof ncftp ncurses-base ncurses-term nfs-kernel-server p7zip-full parted patchutils pkg-config psmisc python3 python3-dev python3-distutils python3-pip python3-venv qemu-user-static rsync swig systemd-container u-boot-tools udev unzip uuid-dev whiptail wget xz-utils zip zlib1g-dev zstd
 
     - name: Clone Armbian build framework
-      run: git clone --depth=1 --branch=$BUILD_ARMBIAN_VERSION https://github.com/armbian/build.git armbian-build
+      run: git clone --depth=1 https://github.com/armbian/build.git armbian-build && cd armbian-build && git checkout $BUILD_ARMBIAN_TAG
 
     - name: Prepare RK3128 configuration
       run: |
