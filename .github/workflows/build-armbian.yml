@@ -1,36 +1,36 @@
-name: Build Armbian for RK3128 Printer Server
+name: Build Armbian RK3128 Printer Server
 on:
-  push:
-    branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      debian_version:
+        description: 'Debian version'
+        required: true
+        default: 'bullseye'
+        type: choice
+        options:
+          - bullseye
+          - bookworm
 jobs:
   build:
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/armbian/docker:latest
-      options: --privileged
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Armbian source
-        run: git clone --depth=1 https://github.com/armbian/build.git /armbian-build
-      - name: Prepare configuration
-        run: cp -r /armbian-build /tmp/build && cd /tmp/build
-      - name: Configure for RK3128
-        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=bullseye BUILD_MINIMAL=no BUILD_DESKTOP=no KERNEL_ONLY=no KERNEL_CONFIGURE=no BSPFREEZE=yes
-      - name: Install printer services in chroot
-        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=bullseye CHROOT_START=yes
-      - name: Add printer services packages
-        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=bullseye CHROOT_ONLY=yes POSTINSTALL_PACKAGES="cups cups-client cups-filters cups-ipp-utils printer-driver-all printer-driver-cups-pdf hplip avahi-daemon avahi-discover avahi-utils system-config-printer sane-airscan ippusbxd"
-      - name: Configure CUPS for remote access
-        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=bullseye CHROOT_ONLY=yes << 'EOF' chroot "${SDCARD}" /bin/bash -c "echo 'Listen 0.0.0.0:631' > /etc/cups/cupsd.conf && echo '<Location />' >> /etc/cups/cupsd.conf && echo '  Order allow,deny' >> /etc/cups/cupsd.conf && echo '  Allow @LOCAL' >> /etc/cups/cupsd.conf && echo '  Allow 192.168.0.0/16' >> /etc/cups/cupsd.conf && echo '  Allow 10.0.0.0/8' >> /etc/cups/cupsd.conf && echo '  Allow 172.16.0.0/12' >> /etc/cups/cupsd.conf && echo '</Location>' >> /etc/cups/cupsd.conf && echo '<Location /admin>' >> /etc/cups/cupsd.conf && echo '  Order allow,deny' >> /etc/cups/cupsd.conf && echo '  Allow @LOCAL' >> /etc/cups/cupsd.conf && echo '  Allow 192.168.0.0/16' >> /etc/cups/cupsd.conf && echo '  Allow 10.0.0.0/8' >> /etc/cups/cupsd.conf && echo '  Allow 172.16.0.0/12' >> /etc/cups/cupsd.conf && echo '</Location>' >> /etc/cups/cupsd.conf && echo 'ServerAlias *' >> /etc/cups/cupsd.conf && echo 'DefaultEncryption Never' >> /etc/cups/cupsd.conf && echo 'WebInterface Yes' >> /etc/cups/cupsd.conf && usermod -a -G lpadmin root"
-      - name: Enable services at boot
-        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=bullseye CHROOT_ONLY=yes << 'EOF' chroot "${SDCARD}" /bin/bash -c "systemctl enable cups && systemctl enable avahi-daemon && systemctl enable ippusbxd"
-      - name: Add printer server utilities script
-        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=bullseye CHROOT_ONLY=yes << 'EOF' chroot "${SDCARD}" /bin/bash -c "cat > /usr/local/bin/printer-server-setup.sh << 'SCRIPTEND' #!/bin/bash echo 'Printer Server Status:' systemctl status cups systemctl status avahi-daemon echo 'Network Interfaces:' ip addr show echo 'CUPS Admin: http://[IP]:631' SCRIPTEND && chmod +x /usr/local/bin/printer-server-setup.sh"
-      - name: Build the image
-        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=bullseye BUILD_MINIMAL=no BUILD_DESKTOP=no KERNEL_ONLY=no KERNEL_CONFIGURE=no
-      - name: Upload artifacts
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Setup environment
+        run: sudo apt-get update && sudo apt-get install -y git wget curl bc build-essential crossbuild-essential-armhf crossbuild-essential-arm64 libncurses-dev libssl-dev device-tree-compiler gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf python3 gawk flex bison openssl libssl-dev dkms libelf-dev libudev-dev libpci-dev libiberty-dev autoconf fdisk
+      - name: Clone Armbian
+        run: git clone --depth=1 https://github.com/armbian/build.git && cd build
+      - name: Copy configs
+        run: cp -r ../userpatches ./
+      - name: Initialize build
+        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=${{ inputs.debian_version }} KERNEL_ONLY=no BUILD_DESKTOP=no BUILD_MINIMAL=yes KERNEL_CONFIGURE=no CLEAN_LEVEL="make,debs" PREPARE_ONLY=yes
+      - name: Install printer packages
+        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=${{ inputs.debian_version }} CHROOT_START=yes CHROOT_ONLY=yes POSTINSTALL_PACKAGES="cups cups-client cups-filters printer-driver-all avahi-daemon"
+      - name: Build image
+        run: ./compile.sh BOARD=rk3128 BRANCH=legacy RELEASE=${{ inputs.debian_version }} KERNEL_ONLY=no BUILD_DESKTOP=no BUILD_MINIMAL=yes KERNEL_CONFIGURE=no CLEAN_LEVEL="make,debs"
+      - name: Upload image
         uses: actions/upload-artifact@v4
         with:
-          name: armbian-rk3128-printer-server
-          path: /tmp/build/output/images/*.img
+          name: armbian-rk3128-printer-${{ inputs.debian_version }}
+          path: build/output/images/Armbian_*.img
           retention-days: 7
